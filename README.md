@@ -70,24 +70,67 @@ Notes:
 
 ## Example
 
-Given a C header file with:
+## Example
+
+Given C header files with nested structures:
 
 ```c
+// sensors.h
 typedef struct {
-    float value1;
-    int32_t value2;
-    uint16_t value3;
-} MyStruct;
+    float temperature;
+    uint16_t humidity;
+    int32_t pressure;
+} SensorData;
+
+// device_status.h
+typedef struct {
+    uint32_t device_id;
+    SensorData primary_sensor;
+    SensorData backup_sensor;
+    uint8_t error_flags;
+    float battery_voltage;
+} DeviceStatus;
 ```
 
-The parser will create a Python dictionary structure:
+The parser will handle nested structures and create a Python dictionary:
 
 ```python
+# Initialize parser and read binary data
+parser = CStructParser("path/to/headers")
+binary_data = get_device_data()  # Your binary data source
+result = parser.unpack_data(binary_data, root_struct='DeviceStatus')
+
+# Result will be structured as:
 {
-    'value1': 1.23,
-    'value2': 42,
-    'value3': 65535
+    'device_id': 12345,
+    'primary_sensor': {
+        'temperature': 25.4,
+        'humidity': 60,
+        'pressure': 101325
+    },
+    'backup_sensor': {
+        'temperature': 25.6,
+        'humidity': 61,
+        'pressure': 101320
+    },
+    'error_flags': 0,
+    'battery_voltage': 3.7
 }
+```
+
+```text
+DeviceStatus (29 bytes total):
+├── device_id      : uint32_t  [0-3]   4 bytes
+├── primary_sensor : SensorData [4-17]  14 bytes
+│   ├── temperature : float     [4-7]   4 bytes
+│   ├── humidity    : uint16_t  [8-9]   2 bytes
+│   └── pressure    : int32_t   [10-13] 4 bytes
+├── backup_sensor  : SensorData [14-27] 14 bytes
+│   ├── temperature : float     [14-17] 4 bytes
+│   ├── humidity    : uint16_t  [18-19] 2 bytes
+│   └── pressure    : int32_t   [20-23] 4 bytes
+├── error_flags    : uint8_t    [24]    1 byte
+└── battery_voltage: float      [25-28] 4 bytes
 ```
 
 ## Requirements
