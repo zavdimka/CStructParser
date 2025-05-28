@@ -177,7 +177,7 @@ class CStructParser:
                 self.struct_sizes[struct_name], self.struct_fields[struct_name] = process_struct(struct_name, set())
 
 
-    def unpack_data(self, data: bytes, root_struct: str = 'T_TARGET') -> dict:
+    def unpack_data(self, data: bytes, root_struct: str) -> dict:
         """Unpack binary data according to the parsed structure"""
         def unpack_struct(data: bytes, offset: int, fields: Dict[str, StructField]) -> tuple[dict, int]:
             result = {}
@@ -202,5 +202,5 @@ class CStructParser:
 if __name__ == "__main__":
     # Example usage
     parser = CStructParser("../MK/Inc")
-    t = parser.unpack_data(bytearray(224))
+    t = parser.unpack_data(bytearray(224), 'T_TARGET')
     print(t)
