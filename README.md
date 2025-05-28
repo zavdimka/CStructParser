@@ -1,6 +1,6 @@
 # CStructParser
 
-A Python utility for parsing C struct definitions from header files and unpacking binary data according to those structures.
+A Python utility to parse binary data according to the C struct definitions from header files.
 
 ## Overview
 
@@ -25,9 +25,9 @@ from CStructParser import CStructParser
 # Initialize parser with path to C header files
 parser = CStructParser("path/to/headers")
 
-# Unpack binary data according to root structure (defaults to 'T_TARGET')
+# Unpack binary data according to root structure
 binary_data = bytearray(224)  # Your binary data
-result = parser.unpack_data(binary_data)
+result = parser.unpack_data(binary_data, root_struct='DeviceStatus')
 print(result)
 ```
 
