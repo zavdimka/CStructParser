@@ -55,11 +55,22 @@ class CStructParser:
             raise
         
 
+    def _remove_comments(self, content: str) -> str:
+        """Remove C-style comments from the content."""
+        # Remove multi-line comments first
+        content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+        # Remove single-line comments
+        content = re.sub(r'//.*?$', '', content, flags=re.MULTILINE)
+        return content
+
     def parse_header_file_as_string(self, content: str)-> None: 
         """Parse a header file content string to extract structure definitions."""
+        # Clean the content by removing all comments
+        cleaned_content = self._remove_comments(content)
+        
         # Parse struct definitions
         struct_pattern = r'typedef\s+struct[^{]*{([^}]+)}\s*(\w+)\s*;'
-        structs = re.finditer(struct_pattern, content)
+        structs = re.finditer(struct_pattern, cleaned_content)
 
         for struct_match in structs:
             struct_body = struct_match.group(1)
@@ -68,7 +79,7 @@ class CStructParser:
             fields = {}
             for line in struct_body.split('\n'):
                 line = line.strip()
-                if line and not line.startswith('//'):
+                if line:  # Remove empty line check since comments are already removed
                     # Match array declarations including multi-dimensional arrays
                     field_match = re.match(r'(\w+)\s+(\w+)(?:\[(\d+)\])*;', line)
                     if field_match:
