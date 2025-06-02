@@ -32,8 +32,18 @@ from CStructParser import CStructParser
 # Initialize parser with path to C header files
 parser = CStructParser("path/to/headers", endian='little')  # or 'big' for big-endian data
 
-# Unpack binary data according to root structure
-binary_data = bytearray(224)  # Your binary data
+# Pack Python dictionary into binary data
+data_dict = {
+    'device_id': 1234,
+    'primary_sensor': {
+        'temperature': 25.5,
+        'humidity': 65,
+        'pressure': 1013
+    }
+}
+binary_data = parser.pack_data(data_dict, root_struct='DeviceStatus')
+
+# Unpack binary data back into dictionary
 result = parser.unpack_data(binary_data, root_struct='DeviceStatus')
 print(result)
 ```
@@ -54,8 +64,14 @@ typedef struct {
 # Initialize parser with structure definition
 parser = CStructParser(struct_def, endian='little')
 
-# Unpack binary data
-binary_data = bytearray(parser.get_struct_size('DirectStruct'))
+# Pack data into binary format
+data = {
+    'values': [1.0, 2.0, 3.0, 4.0],
+    'count': 4
+}
+binary_data = parser.pack_data(data, 'DirectStruct')
+
+# Unpack binary data back
 result = parser.unpack_data(binary_data, 'DirectStruct')
 print(result)
 ```
@@ -160,6 +176,13 @@ DeviceStatus (29 bytes total):
 ├── error_flags    : uint8_t    [24]    1 byte
 └── battery_voltage: float      [25-28] 4 bytes
 ```
+
+## Key Features
+
+- Bi-directional conversion between Python dictionaries and C structs
+- Automatic handling of missing fields (defaults to 0)
+- Array padding for undersized input arrays
+- Nested structure support for both packing and unpacking
 
 ## Requirements
 

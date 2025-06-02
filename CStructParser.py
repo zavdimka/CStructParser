@@ -179,6 +179,46 @@ class CStructParser:
         return result
 
 
+    def pack_data(self, data_dict: dict, root_struct: str) -> bytes:
+        """Pack dictionary data according to the parsed structure"""
+        def pack_struct(data_dict: dict, fields: Dict[str, StructField]) -> bytes:
+            result = bytearray()
+            
+            for field_name, field in fields.items():
+                field_data = data_dict.get(field_name, None)
+                
+                if field.is_struct:
+                    if field.array_size:
+                        # Handle array of structs
+                        array_data = field_data if field_data else []
+                        # Pad with empty dicts if array data is shorter than expected
+                        array_data.extend([{} for _ in range(field.array_size - len(array_data))])
+                        for item in array_data[:field.array_size]:
+                            result.extend(pack_struct(item, field.subfields))
+                    else:
+                        # Handle single struct
+                        sub_data = field_data if field_data else {}
+                        result.extend(pack_struct(sub_data, field.subfields))
+                else:
+                    if field.array_size:
+                        # Handle array of basic types
+                        array_data = field_data if field_data else [0] * field.array_size
+                        # Pad with zeros if array data is shorter than expected
+                        array_data.extend([0] * (field.array_size - len(array_data)))
+                        array_format = f"{self.endian_prefix}{field.array_size}{field.format}"
+                        result.extend(struct.pack(array_format, *array_data[:field.array_size]))
+                    else:
+                        # Handle single basic type
+                        value = field_data if field_data is not None else 0
+                        result.extend(struct.pack(f"{self.endian_prefix}{field.format}", value))
+                
+            return bytes(result)
+
+        if root_struct not in self.struct_fields:
+            raise ValueError(f"Unknown structure: {root_struct}")
+            
+        return pack_struct(data_dict, self.struct_fields[root_struct])
+
     def print_struct_tree(self, root_struct: str, indent: str = "", is_array: bool = False) -> None:
         """Print the structure tree starting from the given root structure.
         
