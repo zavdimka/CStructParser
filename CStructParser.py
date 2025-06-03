@@ -15,6 +15,8 @@ class StructField:
     is_struct: bool
     array_size: Optional[int] = None  # Size of array, None if not an array
     subfields: Dict[str, 'StructField'] = None
+    bit_size: Optional[int] = None  # Size in bits for bit fields
+    bit_offset: Optional[int] = None  # Offset in bits within the current byte
 
 
 class CStructParser:
@@ -65,10 +67,7 @@ class CStructParser:
 
     def parse_header_file_as_string(self, content: str)-> None: 
         """Parse a header file content string to extract structure definitions."""
-        # Clean the content by removing all comments
         cleaned_content = self._remove_comments(content)
-        
-        # Parse struct definitions
         struct_pattern = r'typedef\s+struct[^{]*{([^}]+)}\s*(\w+)\s*;'
         structs = re.finditer(struct_pattern, cleaned_content)
 
@@ -77,51 +76,99 @@ class CStructParser:
             struct_name = struct_match.group(2)
             
             fields = {}
+            current_byte_offset = 0
+            current_bit_offset = 0
+            current_base_type = None
+            current_base_size = 0
+            
             for line in struct_body.split('\n'):
                 line = line.strip()
-                if line:  # Remove empty line check since comments are already removed
-                    # Match array declarations including multi-dimensional arrays
-                    field_match = re.match(r'(\w+)\s+(\w+)(?:\[(\d+)\])*;', line)
-                    if field_match:
-                        type_name, field_name = field_match.groups()[:2]
-                        # Find all array dimensions using findall
-                        dimensions = re.findall(r'\[(\d+)\]', line)
-                        # Calculate total array size as product of all dimensions
-                        array_size = 1
-                        if dimensions:
-                            for dim in dimensions:
-                                array_size *= int(dim)
-                        else:
-                            array_size = None
+                if line:
+                    # Try to match bit field first
+                    bit_field_match = re.match(r'((?:\w+\s+)*\w+)\s+(\w+)\s*:\s*(\d+)\s*;', line)
+                    if bit_field_match:
+                        type_name, field_name, bit_size = bit_field_match.groups()
+                        type_name = type_name.strip()  # Clean up any extra whitespace
+                        bit_size = int(bit_size)
                         
-                        if type_name in self.struct_formats:
-                            format_char, size = self.struct_formats[type_name]
-                            # Add endianness prefix for multi-byte types, but not for chars and single bytes
-                            if size > 1 and format_char not in ('c', 'b', 'B'):
-                                format_char = format_char
-                            fields[field_name] = StructField(
-                                name=field_name,
-                                type_name=type_name,
-                                format=format_char,
-                                size=size * (array_size if array_size else 1),
-                                is_struct=False,
-                                array_size=array_size
-                            )
-                        else:
-                            fields[field_name] = StructField(
-                                name=field_name,
-                                type_name=type_name,
-                                format=None,
-                                size=None,
-                                is_struct=True,
-                                array_size=array_size,
-                                subfields=None
-                            )
+                        if type_name not in self.struct_formats:
+                            raise ValueError(f"Unsupported bit field type: {type_name}")
+                            
+                        format_char, base_size = self.struct_formats[type_name]
+                        
+                        # Check if we need to start a new base type
+                        if current_base_type != type_name or current_bit_offset + bit_size > base_size * 8:
+                            current_byte_offset += current_base_size if current_base_size > 0 else 0
+                            current_bit_offset = 0
+                            current_base_type = type_name
+                            current_base_size = base_size
+                            
+                        fields[field_name] = StructField(
+                            name=field_name,
+                            type_name=type_name,
+                            format=format_char,
+                            size=base_size,
+                            is_struct=False,
+                            array_size=None,
+                            bit_size=bit_size,
+                            bit_offset=current_bit_offset
+                        )
+                        current_bit_offset += bit_size
+                        
+                    else:
+                        # Reset bit field tracking when encountering non-bit field
+                        if current_bit_offset > 0:
+                            current_byte_offset += current_base_size
+                            current_bit_offset = 0
+                            current_base_type = None
+                            current_base_size = 0
+                        
+                        # Handle regular fields
+                        field_match = re.match(r'((?:\w+\s+)*\w+)\s+(\w+)(?:\[(\d+)\])*;', line)
+                        if field_match:
+                            type_name, field_name = field_match.groups()[:2]
+                            type_name = type_name.strip()  # Clean up any extra whitespace
+                            
+                            # Find all array dimensions using findall
+                            dimensions = re.findall(r'\[(\d+)\]', line)
+                            # Calculate total array size as product of all dimensions
+                            array_size = 1
+                            if dimensions:
+                                for dim in dimensions:
+                                    array_size *= int(dim)
+                            else:
+                                array_size = None
+                        
+                            if type_name in self.struct_formats:
+                                format_char, size = self.struct_formats[type_name]
+                                # Add endianness prefix for multi-byte types, but not for chars and single bytes
+                                if size > 1 and format_char not in ('c', 'b', 'B'):
+                                    format_char = format_char
+                                fields[field_name] = StructField(
+                                    name=field_name,
+                                    type_name=type_name,
+                                    format=format_char,
+                                    size=size * (array_size if array_size else 1),
+                                    is_struct=False,
+                                    array_size=array_size,
+                                    bit_size=None,
+                                    bit_offset=None
+                                )
+                            else:
+                                fields[field_name] = StructField(
+                                    name=field_name,
+                                    type_name=type_name,
+                                    format=None,
+                                    size=None,
+                                    is_struct=True,
+                                    array_size=array_size,
+                                    subfields=None
+                                )
 
             self.struct_fields[struct_name] = fields
 
 
-    def calculate_sizes(self)-> None:
+    def calculate_sizes(self) -> None:
         """Calculate sizes and set up subfields for all structures after all files are parsed"""
         def process_struct(struct_name: str, visited: set) -> tuple[int, dict]:
             if struct_name in visited:
@@ -134,15 +181,44 @@ class CStructParser:
             total_size = 0
             fields = self.struct_fields[struct_name]
             
+            current_base_type = None  # Track base type for bit fields
+            current_bits_used = 0     # Track bits used in current base type
+            total_size = 0
+            
             for field in fields.values():
-                if field.is_struct:
-                    if field.type_name not in self.struct_fields:
-                        raise RuntimeError(f"Unknown structure type: {field.type_name}")
-                    # Recursively process substructure
-                    size, subfields = process_struct(field.type_name, visited.copy())
-                    field.size = size
-                    field.subfields = subfields
-                total_size += field.size
+                if field.bit_size is not None:
+                    # Handle bit fields - all bit fields of same base type share the same storage
+                    if current_base_type != field.type_name:
+                        # If we switch to a new base type, account for the previous one
+                        if current_base_type is not None:
+                            total_size += field.size  # Add size of previous base type
+                        current_base_type = field.type_name
+                        current_bits_used = field.bit_size
+                    else:
+                        current_bits_used += field.bit_size
+                        # If we exceed the base type size, start a new one
+                        if current_bits_used > field.size * 8:
+                            total_size += field.size
+                            current_bits_used = field.bit_size
+                else:
+                    # Regular field - add size of previous bit field group if exists
+                    if current_base_type is not None:
+                        total_size += field.size  # Add size of the last bit field group
+                        current_base_type = None
+                        current_bits_used = 0
+                    
+                    if field.is_struct:
+                        if field.type_name not in self.struct_fields:
+                            raise RuntimeError(f"Unknown structure type: {field.type_name}")
+                        # Recursively process substructure
+                        size, subfields = process_struct(field.type_name, visited.copy())
+                        field.size = size
+                        field.subfields = subfields
+                    total_size += field.size
+            
+            # Add size of last bit field group if exists
+            if current_base_type is not None:
+                total_size += fields[next(iter(fields))].size  # Use size of first field (they're all the same base type)
                 
             self.struct_sizes[struct_name] = total_size
             return total_size, fields
@@ -158,21 +234,24 @@ class CStructParser:
         def unpack_struct(data: bytes, offset: int, fields: Dict[str, StructField]) -> tuple[dict, int]:
             result = {}
             current_offset = offset
+            current_byte = None
             
             for field_name, field in fields.items():
-                if field.is_struct:
-                    if field.array_size:
-                        array_result = []
-                        for _ in range(field.array_size):
-                            sub_result, new_offset = unpack_struct(data, current_offset, field.subfields)
-                            array_result.append(sub_result)
-                            current_offset = new_offset
-                        result[field_name] = array_result
-                    else:
-                        sub_result, new_offset = unpack_struct(data, current_offset, field.subfields)
-                        result[field_name] = sub_result
-                        current_offset = new_offset
+                if field.bit_size is not None:
+                    # Handle bit fields
+                    if field.bit_offset == 0:
+                        current_byte = struct.unpack_from('B', data, current_offset)[0]
+                    
+                    mask = (1 << field.bit_size) - 1
+                    value = (current_byte >> field.bit_offset) & mask
+                    result[field_name] = value
+                    
+                    # Move to next byte if this was the last bit field in current byte
+                    if field is list(fields.values())[-1] or \
+                       next(iter(fields.values())).bit_offset == 0:
+                        current_offset += 1
                 else:
+                    # Handle regular fields
                     if field.array_size:
                         array_size = field.array_size
                         array_format = f"{self.endian_prefix}{array_size}{field.format}"
@@ -194,23 +273,39 @@ class CStructParser:
         """Pack dictionary data according to the parsed structure"""
         def pack_struct(data_dict: dict, fields: Dict[str, StructField]) -> bytes:
             result = bytearray()
+            current_byte = 0
+            current_bit_pos = 0
+            current_base_type = None
             
             for field_name, field in fields.items():
                 field_data = data_dict.get(field_name, None)
                 
-                if field.is_struct:
-                    if field.array_size:
-                        # Handle array of structs
-                        array_data = field_data if field_data else []
-                        # Pad with empty dicts if array data is shorter than expected
-                        array_data.extend([{} for _ in range(field.array_size - len(array_data))])
-                        for item in array_data[:field.array_size]:
-                            result.extend(pack_struct(item, field.subfields))
+                if field.bit_size is not None:
+                    # Handle bit fields
+                    value = field_data if field_data is not None else 0
+                    mask = (1 << field.bit_size) - 1
+                    value &= mask
+                    
+                    # Check if we're starting a new base type
+                    if field.bit_offset == 0:
+                        if current_bit_pos > 0:
+                            # Write previous base type if exists
+                            result.extend(struct.pack(f"{self.endian_prefix}{current_base_type}", current_byte))
+                        current_byte = value
+                        current_bit_pos = field.bit_size
+                        current_base_type = field.format
                     else:
-                        # Handle single struct
-                        sub_data = field_data if field_data else {}
-                        result.extend(pack_struct(sub_data, field.subfields))
+                        current_byte |= (value << field.bit_offset)
+                        current_bit_pos = field.bit_offset + field.bit_size
+                    
+                    # Write byte if this is the last field or next field starts new base type
+                    if field is list(fields.values())[-1] or \
+                       list(fields.values())[list(fields.values()).index(field) + 1].bit_offset == 0:
+                        result.extend(struct.pack(f"{self.endian_prefix}{current_base_type}", current_byte))
+                        current_byte = 0
+                        current_bit_pos = 0
                 else:
+                    # Handle regular fields
                     if field.array_size:
                         # Handle array of basic types
                         array_data = field_data if field_data else [0] * field.array_size
@@ -254,9 +349,12 @@ class CStructParser:
                 print(f"{new_indent}└── {field_name}{array_suffix} ({field.type_name})")
                 self.print_struct_tree(field.type_name, new_indent + "    ", bool(field.array_size))
             else:
-                # For basic types, print type information
+                # For basic types, print type information with bit field details if present
                 size_info = f"{field.size} bytes"
                 type_info = f"{field.type_name} ({size_info})"
+                if field.bit_size is not None:
+                    bit_info = f" [bits {field.bit_offset}:{field.bit_offset + field.bit_size - 1}]"
+                    type_info += bit_info
                 print(f"{new_indent}└── {field_name}{array_suffix}: {type_info}")
 
 
@@ -299,3 +397,8 @@ if __name__ == "__main__":
     print("\nStructure tree for DeviceData:")
     parser.print_struct_tree("DeviceData")
     print(f"\nTotal size: {parser.get_struct_size('DeviceData')} bytes\n")
+
+    print("\nExample 4: Unpacking bit fields")
+    parser.print_struct_tree("BitFieldExample")
+    print(f"\nTotal size: {parser.get_struct_size('BitFieldExample')} bytes\n")
+

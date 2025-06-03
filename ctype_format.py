@@ -64,6 +64,12 @@ class CTypeFormat:
         'uintmax_t': ('Q', 8),
     }
 
+    @staticmethod
+    def normalize_type_name(type_name: str) -> str:
+        """Normalize type name by removing extra spaces and standardizing format."""
+        # Remove extra spaces and normalize to single space between words
+        return ' '.join(word for word in type_name.split() if word)
+
     @classmethod
     def get_all_formats(cls) -> Dict[str, Tuple[str, int]]:
         """Returns all format specifications combined into a single dictionary."""
@@ -73,4 +79,12 @@ class CTypeFormat:
         all_formats.update(cls.MIN_WIDTH_TYPES)
         all_formats.update(cls.FAST_TYPES)
         all_formats.update(cls.SPECIAL_TYPES)
+
+        # Add normalized versions of all type names
+        normalized_formats = {}
+        for type_name, format_info in all_formats.items():
+            normalized_name = cls.normalize_type_name(type_name)
+            normalized_formats[normalized_name] = format_info
+
+        all_formats.update(normalized_formats)
         return all_formats
