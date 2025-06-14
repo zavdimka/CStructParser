@@ -20,13 +20,14 @@ class StructField:
 
 
 class CStructParser:
-    def __init__(self, path_or_string: str, endian: str = 'little'):
+    def __init__(self, path_or_string: str, endian: str = 'little', debug: bool = False):
         """
         Initialize CStructParser
         Args:
             path_or_string: Either a path to directory containing header files,
                           or a string containing C struct definitions
             endian: Endianness of the data, either 'little' or 'big'
+            debug: Enable debug output
         """
         if endian not in ('little', 'big'):
             raise ValueError("Endian must be either 'little' or 'big'")
@@ -35,6 +36,7 @@ class CStructParser:
         self.struct_formats = CTypeFormat.get_all_formats()
         self.struct_sizes = {}
         self.struct_fields = {}
+        self.debug = debug
 
         # Check if the input is a directory path or content string
         if os.path.isdir(path_or_string):
@@ -91,15 +93,24 @@ class CStructParser:
                         type_name = type_name.strip()  # Clean up any extra whitespace
                         bit_size = int(bit_size)
                         
+                        self._debug_print(f"Processing bit field: {field_name} of type {type_name} with size {bit_size} bits")
+                        self._debug_print(f"Current state: base_type={current_base_type}, bit_offset={current_bit_offset}")
+                        
                         if type_name not in self.struct_formats:
                             raise ValueError(f"Unsupported bit field type: {type_name}")
                             
                         format_char, base_size = self.struct_formats[type_name]
+                        self._debug_print(f"Base type size: {base_size} bytes")
                         
                         # Check if we need to start a new base type
-                        if current_base_type != type_name or current_bit_offset + bit_size > base_size * 8:
+                        if current_bit_offset + bit_size > base_size * 8:
+                            self._debug_print("Starting new base type storage unit (exceeded bits)")
                             current_byte_offset += current_base_size if current_base_size > 0 else 0
                             current_bit_offset = 0
+                            current_base_type = type_name
+                            current_base_size = base_size
+                        elif current_base_type is None:
+                            self._debug_print("Starting first base type storage unit")
                             current_base_type = type_name
                             current_base_size = base_size
                             
@@ -113,7 +124,9 @@ class CStructParser:
                             bit_size=bit_size,
                             bit_offset=current_bit_offset
                         )
+                        self._debug_print(f"Created bit field {field_name} with offset {current_bit_offset}")
                         current_bit_offset += bit_size
+                        self._debug_print(f"Updated bit offset to {current_bit_offset}")
                         
                     else:
                         # Reset bit field tracking when encountering non-bit field
@@ -188,15 +201,14 @@ class CStructParser:
             for field in fields.values():
                 if field.bit_size is not None:
                     # Handle bit fields
-                    if current_base_type != field.type_name:
-                        if current_base_type is not None:
-                            total_size += self._get_type_size(current_base_type)
+                    if current_base_type is None:
                         current_base_type = field.type_name
                         current_bits_used = field.bit_size
                     else:
                         current_bits_used += field.bit_size
                         if current_bits_used > self._get_type_size(field.type_name) * 8:
                             total_size += self._get_type_size(current_base_type)
+                            current_base_type = field.type_name
                             current_bits_used = field.bit_size
                 else:
                     # Regular field
@@ -452,6 +464,11 @@ class CStructParser:
             for field in self.struct_fields[struct_name].values():
                 field_sizes.append(f"{field.name}:{field.size}")
             print(f"{struct_name} ({size} bytes) - Fields: {', '.join(field_sizes)}")
+    
+    def _debug_print(self, *args):
+        """Print debug information if debug flag is set"""
+        if self.debug:
+            print("[DEBUG]", *args)
 
 
 if __name__ == "__main__":
@@ -468,11 +485,14 @@ if __name__ == "__main__":
     print("\nExample 2: Parsing from string")
     struct_def = """
     typedef struct {
-        float values[4];
-        uint32_t count;
+    unsigned int flags : 3;    // 3-bit field
+    int mode : 2;     // 2-bit field
+    int active : 1;   // 1-bit field
+    int reserved : 26; // 26-bit field to fill up to 32 bits
+    unsigned int regular_field;         // Regular 4-byte field
     } DirectStruct;
     """
-    parser2 = CStructParser(struct_def, endian='little')
+    parser2 = CStructParser(struct_def, endian='little', debug=True)
     print("\nStructure tree for DirectStruct:")
     parser2.print_struct_tree("DirectStruct")
     print(f"\nTotal size: {parser2.get_struct_size('DirectStruct')} bytes")
@@ -494,4 +514,5 @@ if __name__ == "__main__":
     print("\nExample 4: Unpacking bit fields")
     parser.print_struct_tree("BitFieldExample")
     print(f"\nTotal size: {parser.get_struct_size('BitFieldExample')} bytes\n")
+    print(parser.unpack_data(bytes(parser.get_struct_size('BitFieldExample')), 'BitFieldExample'))
 
