@@ -187,33 +187,43 @@ class CStructParser:
             
             for field in fields.values():
                 if field.bit_size is not None:
-                    # Handle bit fields - all bit fields of same base type share the same storage
+                    # Handle bit fields
                     if current_base_type != field.type_name:
-                        # If we switch to a new base type, account for the previous one
                         if current_base_type is not None:
-                            total_size += field.size  # Add size of previous base type
+                            total_size += self._get_type_size(current_base_type)
                         current_base_type = field.type_name
                         current_bits_used = field.bit_size
                     else:
                         current_bits_used += field.bit_size
-                        # If we exceed the base type size, start a new one
-                        if current_bits_used > field.size * 8:
-                            total_size += field.size
+                        if current_bits_used > self._get_type_size(field.type_name) * 8:
+                            total_size += self._get_type_size(current_base_type)
                             current_bits_used = field.bit_size
                 else:
-                    # Regular field - add size of previous bit field group if exists
+                    # Regular field
                     if current_base_type is not None:
-                        total_size += field.size  # Add size of the last bit field group
+                        total_size += self._get_type_size(current_base_type)
                         current_base_type = None
                         current_bits_used = 0
+
+                    if field.array_size:
+                        if field.is_struct:
+                            # Array of structures
+                            struct_size, subfields = process_struct(field.type_name, visited.copy())
+                            field.size = struct_size * field.array_size
+                            field.subfields = subfields
+                        else:
+                            # Array of basic types
+                            field.size = self._get_type_size(field.type_name) * field.array_size
+                    else:
+                        if field.is_struct:
+                            # Single structure
+                            struct_size, subfields = process_struct(field.type_name, visited.copy())
+                            field.size = struct_size
+                            field.subfields = subfields
+                        else:
+                            # Single basic type
+                            field.size = self._get_type_size(field.type_name)
                     
-                    if field.is_struct:
-                        if field.type_name not in self.struct_fields:
-                            raise RuntimeError(f"Unknown structure type: {field.type_name}")
-                        # Recursively process substructure
-                        size, subfields = process_struct(field.type_name, visited.copy())
-                        field.size = size
-                        field.subfields = subfields
                     total_size += field.size
             
             # Add size of last bit field group if exists
@@ -254,14 +264,33 @@ class CStructParser:
                     # Handle regular fields
                     if field.array_size:
                         array_size = field.array_size
-                        array_format = f"{self.endian_prefix}{array_size}{field.format}"
-                        values = struct.unpack_from(array_format, data, current_offset)
-                        result[field_name] = list(values)
-                        current_offset += field.size
+                        if field.is_struct:
+                            # Handle array of structures
+                            array_values = []
+                            for _ in range(array_size):
+                                sub_result, sub_offset = unpack_struct(data, current_offset, self.struct_fields[field.type_name])
+                                array_values.append(sub_result)
+                                current_offset = sub_offset
+                            result[field_name] = array_values
+                        else:
+                            # Handle array of basic types
+                            struct_format = self._get_struct_format(field.type_name)
+                            array_format = f"{self.endian_prefix}{array_size}{struct_format}"
+                            values = struct.unpack_from(array_format, data, current_offset)
+                            result[field_name] = list(values)
+                            current_offset += array_size * self._get_type_size(field.type_name)
                     else:
-                        value = struct.unpack_from(field.format, data, current_offset)[0]
-                        result[field_name] = value
-                        current_offset += field.size
+                        if field.is_struct:
+                            # Handle nested structure
+                            sub_result, sub_offset = unpack_struct(data, current_offset, self.struct_fields[field.type_name])
+                            result[field_name] = sub_result
+                            current_offset = sub_offset
+                        else:
+                            # Handle basic type
+                            struct_format = self._get_struct_format(field.type_name)
+                            value = struct.unpack_from(f"{self.endian_prefix}{struct_format}", data, current_offset)[0]
+                            result[field_name] = value
+                            current_offset += self._get_type_size(field.type_name)
                     
             return result, current_offset
 
@@ -364,11 +393,73 @@ class CStructParser:
             raise ValueError(f"Unknown structure: {struct_name}")
         return self.struct_sizes[struct_name]
 
+    def _get_struct_format(self, type_name: str) -> str:
+        """Get struct format character for a given type name."""
+        type_formats = {
+            'char': 'c',
+            'unsigned char': 'B',
+            'short': 'h',
+            'unsigned short': 'H',
+            'int': 'i',
+            'unsigned int': 'I',
+            'long': 'l',
+            'unsigned long': 'L',
+            'float': 'f',
+            'double': 'd',
+            'int8_t': 'b',
+            'uint8_t': 'B',
+            'int16_t': 'h',
+            'uint16_t': 'H',
+            'int32_t': 'i',
+            'uint32_t': 'I',
+            'int64_t': 'q',
+            'uint64_t': 'Q'
+        }
+        return type_formats.get(type_name, '')
+
+    def _get_type_size(self, type_name: str) -> int:
+        """Get size in bytes for a given type name."""
+        type_sizes = {
+            'char': 1,
+            'unsigned char': 1,
+            'short': 2,
+            'unsigned short': 2,
+            'int': 4,
+            'unsigned int': 4,
+            'long': 8,
+            'unsigned long': 8,
+            'float': 4,
+            'double': 8,
+            'int8_t': 1,
+            'uint8_t': 1,
+            'int16_t': 2,
+            'uint16_t': 2,
+            'int32_t': 4,
+            'uint32_t': 4,
+            'int64_t': 8,
+            'uint64_t': 8
+        }
+        if type_name in self.struct_fields:
+            return self.struct_sizes[type_name]
+        return type_sizes.get(type_name, 0)
+
+    def _print_struct_sizes(self):
+        """Debug helper to print all structure sizes"""
+        print("\nStructure sizes:")
+        for struct_name in self.struct_fields:
+            size = self.get_struct_size(struct_name)
+            field_sizes = []
+            for field in self.struct_fields[struct_name].values():
+                field_sizes.append(f"{field.name}:{field.size}")
+            print(f"{struct_name} ({size} bytes) - Fields: {', '.join(field_sizes)}")
+
 
 if __name__ == "__main__":
     # Example 1: Parse structures from a directory
     print("Example 1: Parsing from directory")
     parser = CStructParser("test", endian='little')
+    parser._print_struct_sizes()  # Add debug output
+    
     print("\nStructure tree for MultiDimTest:")
     parser.print_struct_tree("MultiDimTest")
     print(f"\nTotal size: {parser.get_struct_size('MultiDimTest')} bytes\n")
@@ -397,6 +488,8 @@ if __name__ == "__main__":
     print("\nStructure tree for DeviceData:")
     parser.print_struct_tree("DeviceData")
     print(f"\nTotal size: {parser.get_struct_size('DeviceData')} bytes\n")
+    print("Unpacking example data:")
+    print(parser.unpack_data(bytes(parser.get_struct_size('DeviceData')), 'DeviceData'))
 
     print("\nExample 4: Unpacking bit fields")
     parser.print_struct_tree("BitFieldExample")
