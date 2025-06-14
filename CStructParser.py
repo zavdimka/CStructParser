@@ -88,7 +88,7 @@ class CStructParser:
         print(build_content)
 
         # Create new structure class using parse
-        self.struct_class = cstruct.CStruct.parse(
+        cstruct.parse(
             build_content,
             __byte_order__='<' if self.endian == 'little' else '>'
         )
@@ -96,21 +96,25 @@ class CStructParser:
            
     def unpack_data(self, data: bytes, root_struct: str) -> dict:
         """Unpack binary data according to the parsed structure."""
-        if root_struct not in self.structs:
+        try:
+            struct_class = cstruct.get_type("struct " + root_struct)
+        except AttributeError:
             raise ValueError(f"Unknown structure: {root_struct}")
         
-        struct_class = self.struct_class.get_type(root_struct)
-        struct_class.unpack(data)
-        return self._struct_to_dict(struct_class)
+        instance = struct_class()
+        instance.unpack(data)
+        return self._struct_to_dict(instance)
 
     def pack_data(self, data_dict: dict, root_struct: str) -> bytes:
         """Pack dictionary data according to the parsed structure."""
-        if root_struct not in self.structs:
+        try:
+            struct_class = cstruct.get_type("struct " + root_struct)
+        except AttributeError:
             raise ValueError(f"Unknown structure: {root_struct}")
         
-        struct_class = self.struct_class.get_type(root_struct)
-        self._dict_to_struct(data_dict, struct_class)
-        return struct_class.pack()
+        instance = struct_class()
+        self._dict_to_struct(data_dict, instance)
+        return instance.pack()
 
     def _struct_to_dict(self, struct) -> dict:
         """Convert a cstruct instance to a dictionary."""
@@ -148,12 +152,14 @@ class CStructParser:
         """Print the structure tree starting from the given root structure."""
         try:
             print(f"Printing structure tree for: {root_struct}")
-            struct_class = self.struct_class.get_type(root_struct)
+            struct_class = cstruct.get_type("struct " + root_struct)
+            # Create an instance to get the size
+            instance = struct_class()
         except AttributeError:
             raise ValueError(f"Unknown structure: {root_struct}")
 
         # Get size of the struct
-        struct_size = struct_class.size
+        struct_size = instance.size
 
         # Print current struct with proper branch
         prefix = "└── " if is_last else "├── "
@@ -163,7 +169,7 @@ class CStructParser:
         child_indent = indent + ("    " if is_last else "│   ")
 
         # Get all fields from the struct class
-        fields = struct_class._fields_
+        fields = struct_class.__fields__
         total_fields = len(fields)
 
         # Iterate through fields
@@ -171,27 +177,34 @@ class CStructParser:
             is_last_field = idx == total_fields - 1
 
             # Check if field is an array
-            if hasattr(field_type, '_length_'):
-                array_size = field_type._length_
-                base_type = field_type._type_.__name__
+            if isinstance(field_type, str) and '[' in field_type:
+                # Parse array type and size
+                base_type, array_size = field_type.split('[')
+                array_size = array_size.rstrip(']')
                 print(f"{child_indent}{'└── ' if is_last_field else '├── '}{field_name}[{array_size}]: {base_type}")
+                if base_type.startswith('struct '):
+                    # Array of structures
+                    struct_name = base_type.split(' ')[1]
+                    self.print_struct_tree(struct_name, child_indent + "│   ", True)
                 
             # Check if field is a nested struct
-            elif hasattr(field_type, '_fields_'):
-                struct_name = field_type.__name__
+            elif isinstance(field_type, str) and field_type.startswith('struct '):
+                struct_name = field_type.split(' ')[1]
                 # Recursively print nested struct
                 self.print_struct_tree(struct_name, child_indent, is_last_field)
                 
             else:
                 # Basic type field
-                type_name = field_type.__name__
-                print(f"{child_indent}{'└── ' if is_last_field else '├── '}{field_name}: {type_name}")
+                print(f"{child_indent}{'└── ' if is_last_field else '├── '}{field_name}: {field_type}")
 
     def get_struct_size(self, struct_name: str) -> int:
         """Get the total size of a structure in bytes."""
-        if struct_name not in self.struct_info:
+        try:
+            struct_class = cstruct.get_type("struct " + struct_name)
+            instance = struct_class()
+            return instance.size
+        except AttributeError:
             raise ValueError(f"Unknown structure: {struct_name}")
-        return self.struct_info[struct_name].size
 
     def _process_array_fields(self, struct_body: str) -> str:
         """Process array field declarations to ensure proper C-style syntax."""

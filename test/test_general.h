@@ -27,7 +27,7 @@ typedef struct {
     uint32_t timestamp;
     SensorData readings[4];
     ObjectState movement;
-    float calibration_matrix[3][3];
+    float calibration_matrix[3];
 } DeviceData;
 
 // Structure with all basic types
