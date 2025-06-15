@@ -201,17 +201,16 @@ class CStructParser:
             for field in fields.values():
                 if field.bit_size is not None:
                     # Handle bit fields
-                    if current_base_type is None:
+                    if current_base_type is None or current_bits_used + field.bit_size > self._get_type_size(field.type_name) * 8:
+                        # If we're starting a new base type or would exceed current one
+                        if current_base_type is not None:
+                            total_size += self._get_type_size(current_base_type)
                         current_base_type = field.type_name
                         current_bits_used = field.bit_size
                     else:
                         current_bits_used += field.bit_size
-                        if current_bits_used > self._get_type_size(field.type_name) * 8:
-                            total_size += self._get_type_size(current_base_type)
-                            current_base_type = field.type_name
-                            current_bits_used = field.bit_size
                 else:
-                    # Regular field
+                    # Regular field - first complete any pending bit field storage
                     if current_base_type is not None:
                         total_size += self._get_type_size(current_base_type)
                         current_base_type = None
@@ -240,7 +239,7 @@ class CStructParser:
             
             # Add size of last bit field group if exists
             if current_base_type is not None:
-                total_size += fields[next(iter(fields))].size  # Use size of first field (they're all the same base type)
+                total_size += self._get_type_size(current_base_type)
                 
             self.struct_sizes[struct_name] = total_size
             return total_size, fields
@@ -256,22 +255,29 @@ class CStructParser:
         def unpack_struct(data: bytes, offset: int, fields: Dict[str, StructField]) -> tuple[dict, int]:
             result = {}
             current_offset = offset
-            current_byte = None
+            current_bit_field_value = None
+            current_base_type = None
             
             for field_name, field in fields.items():
                 if field.bit_size is not None:
                     # Handle bit fields
                     if field.bit_offset == 0:
-                        current_byte = struct.unpack_from('B', data, current_offset)[0]
+                        # Start of a new bit field group
+                        format_char = self._get_struct_format(field.type_name)
+                        current_bit_field_value = struct.unpack_from(f"{self.endian_prefix}{format_char}", data, current_offset)[0]
+                        current_base_type = field.type_name
                     
+                    # Extract bits from the current bit field value
                     mask = (1 << field.bit_size) - 1
-                    value = (current_byte >> field.bit_offset) & mask
+                    value = (current_bit_field_value >> field.bit_offset) & mask
                     result[field_name] = value
                     
-                    # Move to next byte if this was the last bit field in current byte
-                    if field is list(fields.values())[-1] or \
-                       next(iter(fields.values())).bit_offset == 0:
-                        current_offset += 1
+                    # Move to next byte group if this was the last bit field in current group
+                    is_last_field = field is list(fields.values())[-1]
+                    next_field = None if is_last_field else list(fields.values())[list(fields.values()).index(field) + 1]
+                    if is_last_field or next_field.bit_size is None or next_field.bit_offset == 0:
+                        current_offset += self._get_type_size(current_base_type)
+                        current_bit_field_value = None
                 else:
                     # Handle regular fields
                     if field.array_size:
@@ -317,6 +323,7 @@ class CStructParser:
             current_byte = 0
             current_bit_pos = 0
             current_base_type = None
+            base_type_size = 0
             
             for field_name, field in fields.items():
                 field_data = data_dict.get(field_name, None)
@@ -335,27 +342,33 @@ class CStructParser:
                         current_byte = value
                         current_bit_pos = field.bit_size
                         current_base_type = field.format
+                        base_type_size = self._get_type_size(field.type_name)
                     else:
                         current_byte |= (value << field.bit_offset)
                         current_bit_pos = field.bit_offset + field.bit_size
                     
-                    # Write byte if this is the last field or next field starts new base type
-                    if field is list(fields.values())[-1] or \
-                       list(fields.values())[list(fields.values()).index(field) + 1].bit_offset == 0:
+                    # Write byte if this is the last field or next field is not a bit field
+                    is_last_field = field is list(fields.values())[-1]
+                    next_field = None if is_last_field else list(fields.values())[list(fields.values()).index(field) + 1]
+                    if is_last_field or next_field.bit_size is None or next_field.bit_offset == 0:
                         result.extend(struct.pack(f"{self.endian_prefix}{current_base_type}", current_byte))
                         current_byte = 0
                         current_bit_pos = 0
                 else:
                     # Handle regular fields
+                    if current_bit_pos > 0:
+                        # Flush any remaining bit fields
+                        result.extend(struct.pack(f"{self.endian_prefix}{current_base_type}", current_byte))
+                        current_byte = 0
+                        current_bit_pos = 0
+                        current_base_type = None
+                    
                     if field.array_size:
-                        # Handle array of basic types
                         array_data = field_data if field_data else [0] * field.array_size
-                        # Pad with zeros if array data is shorter than expected
                         array_data.extend([0] * (field.array_size - len(array_data)))
                         array_format = f"{self.endian_prefix}{field.array_size}{field.format}"
                         result.extend(struct.pack(array_format, *array_data[:field.array_size]))
                     else:
-                        # Handle single basic type
                         value = field_data if field_data is not None else 0
                         result.extend(struct.pack(f"{self.endian_prefix}{field.format}", value))
                 
@@ -492,15 +505,20 @@ if __name__ == "__main__":
     unsigned int regular_field;         // Regular 4-byte field
     } DirectStruct;
     """
-    parser2 = CStructParser(struct_def, endian='little', debug=True)
+    parser2 = CStructParser(struct_def, endian='little')
     print("\nStructure tree for DirectStruct:")
     parser2.print_struct_tree("DirectStruct")
     print(f"\nTotal size: {parser2.get_struct_size('DirectStruct')} bytes")
+
     
     # Create and unpack test data
     test_data = bytearray(parser2.get_struct_size('DirectStruct'))
     result = parser2.unpack_data(test_data, 'DirectStruct')
     print("\nUnpacked data:")
+    print(result)
+
+    result = parser2.pack_data(result, 'DirectStruct')
+    print("\nPacked data (as bytes):")
     print(result)
 
     #Example 3: Unpacking data from a parsed structure
